@@ -31,6 +31,14 @@ export function saveBuiltinRules(changes: Record<string, boolean>): Promise<Save
   })
 }
 
+/** 例外白名单增量更新：{label: [条目...]}（label 可 '*'）；传 null 或 [] 清掉该 label 的名单。 */
+export function saveBuiltinAllow(changes: Record<string, string[] | null>): Promise<SaveConfigResponse> {
+  return shieldFetch<SaveConfigResponse>('/api/config/builtin_allow', {
+    method: 'POST',
+    body: JSON.stringify(changes),
+  })
+}
+
 /**
  * 配置增量操作。POST /api/config 只在顶层合并，凡是「值本身是容器」的字段
  * （audit / egress_proxy / sensitive / upstreams / target_domains …）提交整份

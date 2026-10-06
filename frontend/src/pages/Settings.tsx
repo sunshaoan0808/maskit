@@ -36,7 +36,7 @@ import {
   ChevronRight,
   Globe,
 } from 'lucide-react'
-import { getConfig, saveConfig, saveBuiltinRules, patchConfig, testUpstream, openDataDir, restoreNetwork, getHealth, getConfigBackups, restoreConfigBackup, getPriceSyncStatus, syncPricesNow, getPriceList, type ConfigBackup, type ConfigPatch, type SaveConfigResponse } from '@/api/settings'
+import { getConfig, saveConfig, saveBuiltinRules, saveBuiltinAllow, patchConfig, testUpstream, openDataDir, restoreNetwork, getHealth, getConfigBackups, restoreConfigBackup, getPriceSyncStatus, syncPricesNow, getPriceList, type ConfigBackup, type ConfigPatch, type SaveConfigResponse } from '@/api/settings'
 import { runAudit, cancelAudit, getAuditJob, getAuditReport } from '@/api/audit'
 import { getStatus } from '@/api/proxy'
 import { useMutation } from '@tanstack/react-query'
@@ -637,6 +637,8 @@ export default function SettingsPage({ embeddedTab }: { embeddedTab?: string } =
   // 从 .env 导入对话框
   const [envImportOpen, setEnvImportOpen] = useState(false)
   const [newPrefix, setNewPrefix] = useState('')
+  const [newAllow, setNewAllow] = useState('')
+  const [allowLabel, setAllowLabel] = useState('*')
   const [newDomain, setNewDomain] = useState('')
   const [newPath, setNewPath] = useState('')
   const [newExcludeHost, setNewExcludeHost] = useState('')
@@ -979,6 +981,27 @@ export default function SettingsPage({ embeddedTab }: { embeddedTab?: string } =
     setNewPrefix('')
   }
 
+  // 白名单条目增删：下发该 label 的完整列表（服务端按 label 覆盖），空列表=清掉该 label
+  const setAllowEntries = (label: string, entries: string[], msg?: string) => {
+    const clean = entries.map((s) => s.trim()).filter(Boolean)
+    return save(() => saveBuiltinAllow({ [label]: clean.length ? clean : null }), msg || t('settings.toast.allowUpdated'))
+  }
+  const handleAddAllow = () => {
+    const v = newAllow.trim()
+    if (!v) return
+    if (/\s/.test(v) || v.length > 200) {
+      toast(t('settings.words.allowInvalid'), 'error')
+      return
+    }
+    const cur = builtinAllowList[allowLabel] ?? []
+    if (cur.includes(v)) {
+      toast(t('settings.words.allowExists'), 'error')
+      return
+    }
+    setAllowEntries(allowLabel, [...cur, v], `${t('settings.toast.allowUpdated')} (+${v})`)
+    setNewAllow('')
+  }
+
   const toggleAuditSignal = (sig: string, on: boolean) => {
     // 只改这一个信号开关；提交整个 audit 对象会连带覆盖并发的其他审计设置
     save(() => patchConfig({ key: 'audit', op: 'set', path: ['signals', sig], value: on }), t('settings.toast.signalUpdated'))
@@ -999,6 +1022,7 @@ export default function SettingsPage({ embeddedTab }: { embeddedTab?: string } =
   const builtinRules = (cfg?.builtin_rules as Record<string, boolean>) ?? {}
   const ruleMeta = (cfg?._meta?.builtin_rule_meta as Record<string, string>) ?? {}
   const secretPrefixes = (cfg?.secret_prefixes as string[]) ?? []
+  const builtinAllowList = (cfg?.builtin_allow as Record<string, string[]>) ?? {}
   const streamExclude = (cfg?.stream_exclude_hosts as string[]) ?? []
   // 分类级禁用（sensitive_disabled: string[]）
   const catDisabledList = (cfg?.sensitive_disabled as string[]) ?? []
@@ -1693,6 +1717,77 @@ export default function SettingsPage({ embeddedTab }: { embeddedTab?: string } =
                     {t('settings.words.clear')}
                   </Button>
                 )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border bg-card">
+            <CardHeader className="space-y-1">
+              <CardTitle className="text-sm font-semibold">{t('settings.words.allowTitle')}</CardTitle>
+              <CardDescription className="text-xs text-muted-foreground">
+                {t('settings.words.allowDesc')}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {Object.keys(builtinAllowList).length === 0 && (
+                <p className="text-[11px] text-muted-foreground">{t('settings.words.allowEmpty')}</p>
+              )}
+              {Object.entries(builtinAllowList).map(([label, entries]) => (
+                <div key={label} className="space-y-1.5">
+                  <span className="font-mono text-[11px] font-semibold text-foreground/80">
+                    {label === '*' ? t('settings.words.allowAllRules') : label}
+                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {(entries ?? []).map((v) => (
+                      <span key={v} className="group inline-flex items-center gap-1 rounded-full border bg-muted/30 px-2.5 py-0.5 font-mono text-xs">
+                        {v}
+                        <button
+                          type="button"
+                          className="text-muted-foreground opacity-60 hover:text-red-500 group-hover:opacity-100"
+                          onClick={() => setAllowEntries(label, (entries ?? []).filter((x) => x !== v), `${t('settings.toast.removed')} ${v}`)}
+                          title={t('settings.words.delTitle')}
+                          aria-label={t('settings.words.delTitle')}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))}
+                    <Button
+                      size="sm" variant="ghost" className="h-6 text-[11px] text-muted-foreground"
+                      onClick={() => setAllowEntries(label, [])}
+                    >
+                      {t('settings.words.clear')}
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                <select
+                  value={allowLabel}
+                  onChange={(e) => setAllowLabel(e.target.value)}
+                  className="h-7 rounded-md border border-input bg-background px-2 font-mono text-xs"
+                  aria-label={t('settings.words.allowTitle')}
+                >
+                  <option value="*">{t('settings.words.allowAllRules')}</option>
+                  {Object.keys(builtinRules).sort().map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+                <Input
+                  className="h-7 w-56 text-xs font-mono"
+                  placeholder={t('settings.words.allowPh')}
+                  value={newAllow}
+                  onChange={(e) => setNewAllow(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      handleAddAllow()
+                    }
+                  }}
+                />
+                <Button size="sm" variant="ghost" className="h-6 text-[11px]" onClick={handleAddAllow}>
+                  {t('settings.words.allowAdd')}
+                </Button>
               </div>
             </CardContent>
           </Card>

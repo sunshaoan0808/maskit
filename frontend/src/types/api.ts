@@ -311,6 +311,10 @@ export interface ShieldConfig {
   /** 整词匹配开关：开启后该词两侧加边界。 */
   sensitive_word_whole?: string[]
   builtin_rules?: Record<string, boolean>
+  /** 内置规则例外白名单：{label: [条目...]}，label 可为 '*'（全部规则）。
+   *  命中规则的原文若在名单里则不打码、不记事件。条目支持精确值 / `*.后缀` / `re:正则`，
+   *  EMAIL 还支持纯域名（按 @域名 后缀匹配）。 */
+  builtin_allow?: Record<string, string[]>
   secret_prefixes?: string[]
   audit?: Record<string, unknown>
   _meta?: {
