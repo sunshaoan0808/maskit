@@ -2612,6 +2612,36 @@ def _lookup_by_suffix(token, sid):
     return _lookup(real, sid)
 
 
+def _loose_token_is_genuine(s, tok_body, canon):
+    """宽松遍的**误报闸门**：判断这个裸 `LABEL_6hex` 是否真出自我们签发的占位符。
+
+    为什么需要：第三遍（剥了花括号的裸 token）判据只看形态 `[A-Za-z0-9_]{1,12}_[0-9a-f]{6}`，
+    而**响应体的 `id` 字段天然长这样**——zen / OpenRouter 风格的
+    `<uuid>_<hex>`（实测 `0427a8f1-…-4748ea2458f4_c7aacb02bff441aeb88db5ab9affc9f9`
+    里的 `4_c7aacb`、工具调用 id `call_6b1710`）。于是每次响应都被记成
+    `unresolved += 1` → 事件状态变 unresolved → 面板报「还原失败」，而实际上
+    响应里一个占位符都没有。作者注释里「这种组合正常文本里不会自然出现」的
+    假设在 `id` 字段上不成立。
+
+    判定：本会话签发过该 label（归一化后相等）即认为真；或全局复用表按后缀
+    反查得到同一个 label（覆盖复用表还在、会话已被扫掉的情况）。
+    只影响**计数**，不影响替换——查不到原文时依旧原样放回，绝不猜。
+    """
+    try:
+        if _suffix_real_token(canon) is not None:
+            return True
+        lab = _safe_label(str(tok_body).split("_", 1)[0])
+        if not lab:
+            return False
+        for t in (s.get("fwd") or {}).values():
+            m = _PLACEHOLDER_PARTS_RX.match(t)
+            if m and _safe_label(m.group(1)) == lab:
+                return True
+    except Exception:
+        return False
+    return False
+
+
 class Edit(NamedTuple):
     """一次「原文 → 占位符」替换，坐标为**该次替换发生时**的文本坐标系。"""
     start: int      # 闭
@@ -3411,8 +3441,12 @@ def restore(text, sid, channel="", escape=False, final=False):
                 # 「该片段其实查得到原文、本该被还原」的情况一起跳过——
                 # 实测这一版直接把 test_t7 打红（响应里该有的还原没了）。
                 if not (m.start() > 0 and m.string[m.start() - 1] == "\\"):
-                    s["unresolved"] = s.get("unresolved", 0) + 1
-                    _record_unresolved_sample(s, whole)
+                    # 误报闸门：响应 id 形如 `<uuid>_<hex>`（`4_c7aacb`、`call_6b1710`），
+                    # 形态与裸 token 完全一致但不是占位符。只有本会话（或复用表）真签发过
+                    # 这个 label 才计数，否则面板每次都报假「还原失败」。
+                    if _loose_token_is_genuine(s, tok_body, canon):
+                        s["unresolved"] = s.get("unresolved", 0) + 1
+                        _record_unresolved_sample(s, whole)
                 return whole
             s["restored"] = s.get("restored", 0) + 1
             s["degraded"] = s.get("degraded", 0) + 1
