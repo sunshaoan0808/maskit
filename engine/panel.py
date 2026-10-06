@@ -3419,6 +3419,9 @@ def default_config():
         # 走 /api/config/patch 的 list_add/list_remove 维护（前端 Settings 在用）。
         "sensitive_word_whole": [],
         "builtin_rules": dict(DEFAULT_BUILTIN_RULES),
+        # 例外白名单：{label: [条目...]}，label 可 "*"（全部规则生效）。
+        # 命中规则的原文若在名单里则不打码——用于豁免文档/示例里的恒定值。
+        "builtin_allow": {},
         "secret_prefixes": list(DEFAULT_SECRET_PREFIXES),
         "debug": False,
         "diagnostic_unmatched": False,
@@ -3680,6 +3683,19 @@ def normalize_config(raw, warnings=None):
             if k in builtin_rules:
                 builtin_rules[k] = bool(v)
 
+    # 例外白名单：{label: [条目...]}；label 可 "*"（全部规则）。只接受已知 label，条目去重限长。
+    builtin_allow = {}
+    raw_allow = raw.get("builtin_allow")
+    if isinstance(raw_allow, dict):
+        for k, v in raw_allow.items():
+            lab = str(k or "").strip().upper() or "*"
+            if lab != "*" and lab not in builtin_rules:
+                continue
+            if isinstance(v, (list, tuple)):
+                items = _uniq([str(x).strip() for x in v if str(x or "").strip()])[:MAX_ITEMS]
+                if items:
+                    builtin_allow[lab] = items
+
     prefixes = []
     raw_prefixes = raw.get("secret_prefixes", base["secret_prefixes"])
     if isinstance(raw_prefixes, list):
@@ -3862,6 +3878,7 @@ def normalize_config(raw, warnings=None):
         "sensitive_word_disabled": sensitive_word_disabled,
         "sensitive_word_whole": _uniq([str(w) for w in (raw.get("sensitive_word_whole") or []) if w])[:MAX_ITEMS],
         "builtin_rules": builtin_rules,
+        "builtin_allow": builtin_allow,
         "secret_prefixes": prefixes,
         "debug": bool(raw.get("debug", False)),
         "diagnostic_unmatched": bool(raw.get("diagnostic_unmatched", False)),
@@ -4391,6 +4408,44 @@ def api_set_builtin_rules():
     except Exception as e:
         return jsonify({"ok": False, "error": _safe_public_text(e, 240)}), 400
     _emit_log("[panel] 内置规则已更新")
+    return jsonify({"ok": True, "config": cfg, "warnings": warnings, "proxy_restarted": False})
+
+
+@app.post("/api/config/builtin_allow")
+def api_set_builtin_allow():
+    """只更新内置规则的例外白名单（{label: [条目...]}，label 可 "*"），不覆盖整份规则表。
+
+    条目语义见 transparent._rule_allowlisted：精确值 / `*.suffix` / `re:正则` /
+    纯域名(仅 EMAIL 的 @domain 后缀)。传空 dict 表示清空白名单。
+    传 {"<label>": null} 可只清掉某个 label 的名单。
+    """
+    changes = request.get_json(silent=True)
+    if not isinstance(changes, dict):
+        return jsonify({"ok": False, "error": "白名单更新必须是 JSON 对象 {label: [条目...]}"}), 400
+    warnings = []
+    try:
+        with cfg_lock:
+            cfg = _load_config_locked()
+            allow = dict(cfg.get("builtin_allow") or {})
+            for label, entries in changes.items():
+                lab = str(label or "").strip().upper() or "*"
+                if lab != "*" and lab not in DEFAULT_BUILTIN_RULES:
+                    return jsonify({"ok": False, "error": f"未知规则名: {label}"}), 400
+                if entries is None or (isinstance(entries, list) and not entries):
+                    allow.pop(lab, None)
+                    continue
+                if not isinstance(entries, list):
+                    return jsonify({"ok": False, "error": f"{label} 的值必须是字符串数组或 null"}), 400
+                items = [str(x).strip() for x in entries if str(x or "").strip()]
+                if items:
+                    allow[lab] = items
+                else:
+                    allow.pop(lab, None)
+            cfg["builtin_allow"] = allow
+            cfg = save_config(cfg, warnings)
+    except Exception as e:
+        return jsonify({"ok": False, "error": _safe_public_text(e, 240)}), 400
+    _emit_log("[panel] 例外白名单已更新: %s" % ", ".join(f"{k}×{len(v)}" for k, v in (cfg.get("builtin_allow") or {}).items()))
     return jsonify({"ok": True, "config": cfg, "warnings": warnings, "proxy_restarted": False})
 
 

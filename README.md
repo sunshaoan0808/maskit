@@ -288,6 +288,42 @@ cd frontend && npm run dev
 
 ---
 
+## 🧩 内置规则例外白名单（fork 扩展）
+
+内置规则只有「整条开/关」时，文档、README、示例配置里恒定的值（`git@github.com`、`example.com`、示例 key …）每轮都被打码，审计日志全是噪音 —— 但为此整条关掉 `EMAIL` 又会漏脱敏真实邮箱。本 fork 增加**例外白名单**：命中规则的原文若在名单里，**不打码也不记事件**，其余命中照旧。
+
+配置键 `builtin_allow`（`config.json`，支持热重载）：
+
+```json
+{
+  "builtin_allow": {
+    "EMAIL": ["git@github.com", "example.com", "*.corp-docs.internal", "re:.*@example\\.(com|org)"],
+    "*": ["CHANGE_ME"]
+  }
+}
+```
+
+条目语义：
+
+| 条目形式 | 匹配方式 |
+|---|---|
+| `foo@bar.com` | 等于原文（大小写不敏感） |
+| `bar.com` | 仅 `EMAIL`：按 `@bar.com` 域名后缀匹配 |
+| `*.example.com` | 原文以 `.example.com` 结尾 |
+| `re:正则` | 对原文做 `fullmatch`（非法正则忽略） |
+| label 用 `"*"` | 对所有规则生效（如豁免 `CHANGE_ME` 这类占位符） |
+
+增量更新（不必提交整份配置快照，热重载生效，无需重启）：
+
+```bash
+curl -X POST http://127.0.0.1:5801/api/config/builtin_allow \
+  -H "X-Shield-Token: $MASKIT_PANEL_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"EMAIL": ["git@github.com", "example.com"]}'
+# 传 null 或 [] 清掉某个 label；传 {} 清空整份白名单
+```
+
+适用场景：豁免固定文档域名 / 企业内部非敏感公共地址 / 代码里的占位符常量。**注意**：白名单是「值级」的，写进去的值在任何上下文中都不会再脱敏，因此不要把真实凭据或真人 PII 加进去。
+
 ## 💬 社区与交流
 
 - **官方 QQ 交流群**：**`489926214`**（欢迎加入交流讨论，获取最新规则与版本动态）；

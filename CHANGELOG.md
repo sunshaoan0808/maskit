@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 新增 / Added
+- 配置：新增内置规则的**例外白名单** `builtin_allow`（`{label: [条目...]}`，label 可为 `"*"`）。命中规则的原文若在白名单里则不打码；条目支持精确值（大小写不敏感）、`*.suffix` 后缀、`re:正则`，以及对 `EMAIL` 的纯域名（按 `@domain` 后缀匹配）。用于豁免文档/示例里恒定出现的值（如 `git@github.com`、`example.com`），避免为个别噪音整条关掉规则而漏脱敏真实数据。支持 config.json 热重载，并提供 `POST /api/config/builtin_allow` 增量更新端点。
+  *Config: added a builtin-rule **exception allowlist** `builtin_allow` (`{label: [entries...]}`, label may be `"*"`). A matched value present in the allowlist is left unmasked; entries support exact values, `*.suffix`, `re:regex`, and bare domains (as `@domain` suffix) for `EMAIL`. Lets deployments exempt constant doc/example values instead of disabling an entire rule and leaking real data. Hot-reloaded from config.json; new incremental endpoint `POST /api/config/builtin_allow`.*
+
 ### 优化 / Changed
 - 文档：修正对外能力表述——扩展站点支持改为「ChatGPT / Claude / DeepSeek 三站已实测」，附件脱敏补充「未适配站点文件本体不脱敏并弹窗提示」，规则库写明「21 类中默认开启 7 类」，NER 标注默认关闭，并说明「引擎不可用时明文直通＝不脱敏」。
   *Docs: corrected capability claims — extension site support now states the three verified sites, attachment masking notes unmasked files on unsupported sites with a popup warning, the rule library states that 7 of 21 rules are on by default, NER is marked off by default, and "engine down = unmasked passthrough" is documented.*

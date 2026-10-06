@@ -301,6 +301,12 @@ SENSITIVE_WORD_DISABLED = {}
 SENSITIVE_WORD_WHOLE = set()
 # 内置规则开关（按 label；False 则 mask/scan 跳过该标签全部正则）
 BUILTIN_RULES = dict(DEFAULT_BUILTIN_RULES)
+# 内置规则的例外白名单: {label: [条目, ...]} —— 命中规则的原文若在名单里则**不打码**。
+# 条目形式: 精确值(大小写不敏感) / `*.suffix` 后缀 / `re:正则`(fullmatch) /
+# 不含 @ 的纯域名(仅 EMAIL 生效, 匹配 @domain 后缀); label 用 `*` 表示对所有规则生效。
+# 动机: 文档/示例里恒定的值(如 git@github.com、example.com)每轮都打码只是噪音(还原精确,
+# 不影响体验但脏日志); 而不该为这点噪音整条关掉规则 —— 那会漏脱敏真实数据。
+BUILTIN_ALLOW = {}
 SESSION_TTL = DEFAULT_TTL
 DEBUG = False  # 调试：写完整 body（含真实原文）到 debug-日期.log
 DIAGNOSTIC_UNMATCHED = False  # 诊断：只记录未命中请求元数据，不记录 body
@@ -2048,6 +2054,59 @@ def _rule_enabled(label):
     return bool(BUILTIN_RULES.get(label, True))
 
 
+# 白名单条目正则编译缓存（`re:` 形式）
+_ALLOW_RE_CACHE = {}
+
+
+def _rule_allowlisted(orig, label):
+    """该 (原文, 规则标签) 是否被例外白名单豁免 —— True 表示不打码。
+
+    条目语义（BUILTIN_ALLOW[label] 或 BUILTIN_ALLOW["*"]）：
+      - `re:<正则>`：fullmatch 原文（缓存编译，非法正则忽略）
+      - 含 `@`：等于原文（大小写不敏感）
+      - `*.suffix`：原文以 `.suffix` 结尾（大小写不敏感）
+      - 其他纯净条目：等于原文；若 label == "EMAIL" 则额外按 `@条目` 域名后缀匹配
+    """
+    if not BUILTIN_ALLOW:
+        return False
+    entries = list(BUILTIN_ALLOW.get(label) or []) + list(BUILTIN_ALLOW.get("*") or [])
+    if not entries:
+        return False
+    o = (orig or "").strip()
+    if not o:
+        return False
+    ol = o.lower()
+    for e in entries:
+        e = str(e or "").strip()
+        if not e:
+            continue
+        if e.startswith("re:"):
+            rx = _ALLOW_RE_CACHE.get(e)
+            if rx is None:
+                try:
+                    rx = re.compile(e[3:])
+                except re.error:
+                    rx = False
+                _ALLOW_RE_CACHE[e] = rx
+            if rx and rx.fullmatch(o):
+                return True
+            continue
+        el = e.lower()
+        if "@" in e:
+            if ol == el:
+                return True
+            continue
+        if e.startswith("*."):
+            if ol.endswith(el[1:]):
+                return True
+            continue
+        if ol == el:
+            return True
+        if label == "EMAIL" and ol.endswith("@" + el):
+            return True
+    return False
+
+
 def _custom_word_enabled(word, label):
     if label in SENSITIVE_DISABLED:
         return False
@@ -3001,6 +3060,9 @@ def mask(text, sid):
                     exempt_conn.append((m.start(), m.end()))
                 continue
             if label == "EMAIL" and _overlaps_exempt_conn(m.start(), m.end(), exempt_conn):
+                continue
+            # 例外白名单：文档/示例里的恒定值(如 git@github.com)豁免, 不打码也不记事件
+            if _rule_allowlisted(orig, label):
                 continue
             _hit(orig, label)
             matched.append(orig)
@@ -6408,6 +6470,19 @@ def _read_settings():
     audit_signals_cfg = audit_cfg.get("signals") or {}
     if not isinstance(audit_signals_cfg, dict):
         audit_signals_cfg = {}
+    # 例外白名单：{label: [条目...]}，label 可为 "*"。只接受已知 label；条目去空白、去重、限长。
+    # 解析放在这里（与 builtin_rules 同层），_maybe_reload 直接取 s["builtin_allow"]。
+    builtin_allow = {}
+    raw_allow = cfg.get("builtin_allow")
+    if isinstance(raw_allow, dict):
+        for k, v in raw_allow.items():
+            lab = str(k or "").strip().upper() or "*"
+            if lab != "*" and lab not in builtin:
+                continue
+            if isinstance(v, (list, tuple)):
+                items = [str(x).strip() for x in v if str(x or "").strip()]
+                if items:
+                    builtin_allow[lab] = items
     return {
         "domains": cfg.get("target_domains") or DEFAULT_DOMAINS,
         "disabled": set(cfg.get("domains_disabled") or []),
@@ -6416,6 +6491,7 @@ def _read_settings():
         "sensitive_disabled": disabled_labels,
         "sensitive_word_disabled": word_disabled,
         "builtin_rules": builtin,
+        "builtin_allow": builtin_allow,
         "prefixes": prefixes,
         "ttl": int(cfg.get("session_ttl") or DEFAULT_TTL),
         "debug": bool(cfg.get("debug")),
@@ -6462,7 +6538,7 @@ def _maybe_reload(force=False):
     global TARGET_DOMAINS, API_PATHS, CUSTOM_WORDS, SESSION_TTL, DEBUG, DIAGNOSTIC_UNMATCHED, DOMAINS_DISABLED, SECRET_PREFIXES, UPSTREAMS, CAPTURE_MODE, FILTER_ENABLED
     global AUDIT_ENABLED, AUDIT_PASSIVE, AUDIT_ACTIVE_PROBES, AUDIT_SEVERITY_FLOOR, AUDIT_SIGNALS
     global FAIL_CLOSED, RESPONSE_SCAN, STREAM_RESPONSE, STREAM_EXCLUDE_HOSTS
-    global SENSITIVE_DISABLED, SENSITIVE_WORD_DISABLED, SENSITIVE_WORD_WHOLE, BUILTIN_RULES, EGRESS_PROXY
+    global SENSITIVE_DISABLED, SENSITIVE_WORD_DISABLED, SENSITIVE_WORD_WHOLE, BUILTIN_RULES, BUILTIN_ALLOW, EGRESS_PROXY
     try:
         mt = _DATA_ROOT.joinpath("config.json").stat().st_mtime
     except Exception:
@@ -6502,6 +6578,22 @@ def _maybe_reload(force=False):
         raw_br["IP_PRIVATE"] = bool(raw_br.get("IP"))
         raw_br["IP_INTERNAL"] = False
     BUILTIN_RULES.update(raw_br)
+    # 例外白名单：{label: [条目...]}，label 可为 "*"（对所有规则生效）。
+    # 与 builtin_rules 一样支持热重载（_maybe_reload 每请求 stat config.json）。
+    raw_allow = s.get("builtin_allow") or {}
+    _allow = {}
+    if isinstance(raw_allow, dict):
+        for k, v in raw_allow.items():
+            k = str(k or "").strip().upper() or "*"
+            if k != "*" and k not in BUILTIN_RULES:
+                continue
+            if isinstance(v, (list, tuple)):
+                items = [str(x).strip() for x in v if str(x or "").strip()]
+                if items:
+                    _allow[k] = items
+    BUILTIN_ALLOW.clear()
+    BUILTIN_ALLOW.update(_allow)
+    _ALLOW_RE_CACHE.clear()  # 名单变更后清正则缓存
     AUDIT_ENABLED = s["audit_enabled"]
     AUDIT_PASSIVE = s["audit_passive"]
     AUDIT_ACTIVE_PROBES = s["audit_active_probes"]
